@@ -4,8 +4,7 @@ A multi-agent code review platform. Paste code, upload a file, or link a GitHub 
 
 ---
 
-![PanelReview Landing Page](docs/screenshot-landing.png)
-<!-- Replace with an actual screenshot once available -->
+<img width="1163" height="801" alt="Screenshot 2026-06-15 at 11 30 20 AM" src="https://github.com/user-attachments/assets/f9fdffac-5ed2-41e7-a7c4-5f54e9168047" />
 
 ---
 
