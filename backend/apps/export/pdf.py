@@ -1,7 +1,6 @@
 import logging
 from django.http import HttpResponse
 from django.template.loader import render_to_string
-from weasyprint import HTML
 
 logger = logging.getLogger(__name__)
 
@@ -11,6 +10,8 @@ def generate_pdf(review) -> HttpResponse:
     Render a PDF report for a completed review.
     Returns an HttpResponse with Content-Type: application/pdf.
     """
+    from weasyprint import HTML  # lazy: cairocffi dlopen at call time, not startup
+
     context = _build_context(review)
     html_string = render_to_string('pdf_report.html', context)
 
