@@ -137,6 +137,10 @@ REST_AUTH = {
     'TOKEN_MODEL': None,
 }
 
+# Rate limits
+ANONYMOUS_DAILY_LIMIT = env.int('ANONYMOUS_DAILY_LIMIT', default=5)
+AUTHENTICATED_DAILY_LIMIT = env.int('AUTHENTICATED_DAILY_LIMIT', default=20)
+
 # DRF
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': (
@@ -146,8 +150,8 @@ REST_FRAMEWORK = {
         'rest_framework.permissions.IsAuthenticatedOrReadOnly',
     ),
     'DEFAULT_THROTTLE_RATES': {
-        'anon': '5/day',
-        'user': '20/day',
+        'anon': f'{ANONYMOUS_DAILY_LIMIT}/day',
+        'user': f'{AUTHENTICATED_DAILY_LIMIT}/day',
     },
 }
 
@@ -192,10 +196,6 @@ GROQ_MODEL = env('GROQ_MODEL', default='llama-3.3-70b-versatile')
 
 # GitHub
 GITHUB_TOKEN = env('GITHUB_TOKEN', default='')
-
-# Rate limits
-ANONYMOUS_DAILY_LIMIT = env.int('ANONYMOUS_DAILY_LIMIT', default=5)
-AUTHENTICATED_DAILY_LIMIT = env.int('AUTHENTICATED_DAILY_LIMIT', default=20)
 
 # Code size limits
 ANONYMOUS_MAX_LINES = env.int('ANONYMOUS_MAX_LINES', default=200)

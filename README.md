@@ -278,6 +278,8 @@ Navigate to [http://localhost:3000](http://localhost:3000).
 | `GOOGLE_CLIENT_SECRET` | No | Required for Google OAuth login |
 | `ALLOWED_HOSTS` | No | Comma-separated hosts (production); defaults to `.railway.app` |
 | `CORS_ALLOWED_ORIGINS` | No | Comma-separated origins for CORS (production) |
+| `ANONYMOUS_DAILY_LIMIT` | No | Reviews/day for anonymous users. Default: 5 |
+| `AUTHENTICATED_DAILY_LIMIT` | No | Reviews/day for authenticated users. Default: 20 |
 | `ANONYMOUS_MAX_LINES` | No | Default: 200 lines |
 | `AUTHENTICATED_MAX_LINES` | No | Default: 500 lines |
 | `NEXT_PUBLIC_API_URL` | Yes | Backend URL for the frontend build |
