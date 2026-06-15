@@ -1,6 +1,6 @@
 # PanelReview
 
-A multi-agent code review platform. Paste code, upload a file, or link a GitHub URL — five AI agents, each embodying a distinct senior engineer persona, independently review your code and stream their verdicts live. A Synthesis Agent reconciles their findings, surfaces conflicts where agents disagree, and produces a severity-ranked verdict with an overall score.
+A multi-agent code review platform. Paste code, upload a file, or link a GitHub URL — five AI agents, each embodying a distinct senior engineer persona, independently review your code and stream their verdicts live. A Synthesis Agent reconciles their findings, surfaces conflicts where agents disagree, and produces a severity-ranked verdict.
 
 ---
 
@@ -30,14 +30,14 @@ A multi-agent code review platform. Paste code, upload a file, or link a GitHub 
 
 PanelReview treats a code review as a structured debate between five opinionated engineers who never met. Each agent works from the same code independently, reports their findings without influence from the others, and streams results the moment they finish. The Synthesis Agent then steps in as a tech lead — identifying where multiple agents agree (high signal), where only one flags something (worth considering), and where they explicitly contradict each other (interesting conflict worth understanding).
 
-The result is a conflict-first severity-ranked issue list, a downloadable PDF report, and a permanent shareable link — all without requiring an account.
+The result is a conflict-first severity-ranked issue list and a permanent shareable link — all without requiring an account.
 
 ## How It Works
 
 1. **Submit** — paste code, upload a file (up to 100KB), or provide a GitHub URL (single file, or best file auto-selected from a repo)
 2. **Watch** — five agents run sequentially and stream their verdicts live over WebSocket as each one finishes
 3. **Read** — the Synthesis Agent merges findings, marks issues agreed on by 2+ agents as Critical, and surfaces explicit conflicts
-4. **Export** — download a PDF report or copy a permanent public share link
+4. **Share** — copy a permanent public link to any review
 
 ## Agent Personas
 
@@ -48,7 +48,7 @@ The result is a conflict-first severity-ranked issue list, a downloadable PDF re
 | **Minimalist** | Clean Code Evangelist | Dead code, SRP violations, complexity, poor naming |
 | **Optimizer** | Performance Engineer | N+1 queries, O(n²) loops, missing indexes, memory leaks |
 | **Mentor** | Senior Onboarding Engineer | Teachable anti-patterns, unclear intent, missing tests |
-| **Synthesis** | Tech Lead | Cross-agent reconciliation, severity ranking, overall score |
+| **Synthesis** | Tech Lead | Cross-agent reconciliation, severity ranking, conflict surfacing |
 
 ## Architecture
 
@@ -121,8 +121,7 @@ ReviewState (TypedDict)
 | `worker/tasks.py` | Celery entry point; owns review lifecycle (status transitions, error handling) |
 | `ws/consumers.py` | WebSocket lifecycle; event replay for late-connecting clients |
 | `ws/middleware.py` | JWT authentication for WebSocket connections (reads `?token=` query param) |
-| `apps/export/pdf.py` | Render PDF from Django template using WeasyPrint |
-| `apps/reviews/views.py` | DRF views for submit, detail, share, history, PDF download |
+| `apps/reviews/views.py` | DRF views for submit, detail, share, history |
 
 ## Architectural Decisions
 
@@ -176,7 +175,7 @@ Each agent node writes to the channel layer immediately after getting its LLM re
 
 ### Why anonymous reviews without login?
 
-Requiring login before showing any value creates a large drop-off. The anonymous flow (5 reviews/day, 200-line limit) lets a user experience the full product immediately. Google OAuth is positioned as an upgrade: history, higher limits, saved annotations.
+Requiring login before showing any value creates a large drop-off. The anonymous flow (5 reviews/day, 200-line limit) lets a user experience the full product immediately. Google OAuth is positioned as an upgrade: review history and higher line limits.
 
 ## Tech Stack
 
@@ -191,7 +190,6 @@ Requiring login before showing any value creates a large drop-off. The anonymous
 | Cache / Broker | Redis 7 |
 | GitHub Integration | PyGithub |
 | Language Detection | pygments |
-| PDF Generation | WeasyPrint |
 | Auth | django-allauth (Google OAuth) + simplejwt |
 | Frontend | Next.js 14, TypeScript, TailwindCSS, shadcn/ui |
 | Deployment | Railway |
@@ -201,9 +199,7 @@ Requiring login before showing any value creates a large drop-off. The anonymous
 - **Three input modes** — paste, file upload, GitHub URL
 - **Live streaming** — agent verdicts appear as they complete via WebSocket
 - **Conflict detection** — where agents disagree is surfaced explicitly; you see both stances
-- **Severity ranking** — issues flagged by 2+ agents are marked Critical
-- **Overall score** — 0–100 weighted severity score from the Synthesis Agent
-- **PDF export** — downloadable report with all findings
+- **Severity ranking** — issues flagged by 2+ agents are marked Critical; single-agent findings listed separately
 - **Shareable links** — every review gets a permanent public URL (`/r/{slug}`)
 - **Review history** — Google OAuth unlocks a dashboard of past reviews
 - **Rate limiting** — 5 reviews/day anonymous, 20/day authenticated
@@ -282,8 +278,6 @@ Navigate to [http://localhost:3000](http://localhost:3000).
 | `GOOGLE_CLIENT_SECRET` | No | Required for Google OAuth login |
 | `ALLOWED_HOSTS` | No | Comma-separated hosts (production); defaults to `.railway.app` |
 | `CORS_ALLOWED_ORIGINS` | No | Comma-separated origins for CORS (production) |
-| `ANONYMOUS_DAILY_LIMIT` | No | Default: 5 reviews/day |
-| `AUTHENTICATED_DAILY_LIMIT` | No | Default: 20 reviews/day |
 | `ANONYMOUS_MAX_LINES` | No | Default: 200 lines |
 | `AUTHENTICATED_MAX_LINES` | No | Default: 500 lines |
 | `NEXT_PUBLIC_API_URL` | Yes | Backend URL for the frontend build |
@@ -296,7 +290,6 @@ Navigate to [http://localhost:3000](http://localhost:3000).
 |---|---|---|---|
 | `POST` | `/api/reviews/` | Optional | Submit code for review |
 | `GET` | `/api/reviews/{id}/` | Optional | Poll review status and results |
-| `GET` | `/api/reviews/{id}/pdf/` | Optional | Download PDF report |
 | `GET` | `/api/r/{slug}/` | None | Public share page data |
 | `GET` | `/api/history/` | Required | Authenticated user's review history |
 | `POST` | `/api/auth/token/` | None | Issue JWT (email + password) |
@@ -426,8 +419,6 @@ The project runs as three Railway services sharing one repo:
 - **Code size** — anonymous users are limited to 200 lines; authenticated users to 500 lines; file uploads capped at 100KB
 - **Language support** — all pygments-supported languages are detected, but agent prompts perform best on mainstream languages (Python, TypeScript, Go, Java, Rust, C/C++)
 - **Groq rate limits** — the free tier allows 14,400 RPD and 12,000 TPM. The sequential pipeline and SDK retry logic handle occasional bursts, but very large files in rapid succession may add latency
-- **PDF emoji rendering** — WeasyPrint does not support color emoji fonts on Linux; the PDF report uses text labels in place of emoji
-
 ## License
 
 MIT
