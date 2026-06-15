@@ -20,4 +20,4 @@ COPY . .
 
 EXPOSE 8080
 
-CMD ["sh", "-c", "python manage.py collectstatic --noinput && python manage.py migrate --noinput && daphne -b 0.0.0.0 -p 8080 config.asgi:application"]
+CMD ["sh", "-c", "python manage.py collectstatic --noinput && python manage.py migrate --noinput && daphne -b 0.0.0.0 -p ${PORT:-8080} config.asgi:application"]
