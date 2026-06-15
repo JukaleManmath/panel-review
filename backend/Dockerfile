@@ -18,6 +18,13 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
+# Collect static files at build time so container starts fast.
+# Uses local settings with dummy creds — collectstatic doesn't touch the DB or Redis.
+RUN SECRET_KEY=build-only \
+    DATABASE_URL=postgres://x:x@localhost/x \
+    DJANGO_SETTINGS_MODULE=config.settings.local \
+    python manage.py collectstatic --noinput
+
 EXPOSE 8080
 
-CMD ["sh", "-c", "python manage.py collectstatic --noinput && python manage.py migrate --noinput && daphne -b 0.0.0.0 -p ${PORT:-8080} config.asgi:application"]
+CMD ["sh", "-c", "python manage.py migrate --noinput && daphne -b 0.0.0.0 -p ${PORT:-8080} config.asgi:application"]
