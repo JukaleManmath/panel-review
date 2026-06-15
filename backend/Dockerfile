@@ -25,6 +25,8 @@ RUN SECRET_KEY=build-only \
     DJANGO_SETTINGS_MODULE=config.settings.local \
     python manage.py collectstatic --noinput
 
+ENV DJANGO_SETTINGS_MODULE=config.settings.production
+
 EXPOSE 8080
 
 CMD ["sh", "-c", "python manage.py migrate --noinput && daphne -b 0.0.0.0 -p ${PORT:-8080} config.asgi:application"]
