@@ -6,6 +6,8 @@ env = environ.Env()
 DEBUG = False
 
 ALLOWED_HOSTS = env.list('ALLOWED_HOSTS', default=['.railway.app'])
+if '.railway.app' not in ALLOWED_HOSTS and '*' not in ALLOWED_HOSTS:
+    ALLOWED_HOSTS = ALLOWED_HOSTS + ['.railway.app']
 
 # Railway terminates SSL at the proxy layer and forwards plain HTTP internally.
 # SECURE_SSL_REDIRECT must be False here — Railway's load balancer enforces HTTPS.
