@@ -1,6 +1,13 @@
 # PanelReview
 
-A multi-agent code review platform. Paste code, upload a file, or link a GitHub URL — five AI agents, each embodying a distinct senior engineer persona, independently review your code and stream their verdicts live. A Synthesis Agent reconciles their findings, surfaces conflicts where agents disagree, and produces a severity-ranked verdict.
+A multi-agent code review platform. Paste code, upload a file, or link a GitHub URL — five AI agents, each embodying a distinct senior engineer persona, independently review your code and stream their verdicts live. A Synthesis Agent reconciles their findings, surfaces conflicts where agents disagree, and produces a severity-ranked verdict with an overall score.
+
+---
+
+![PanelReview Landing Page](docs/screenshot-landing.png)
+<!-- Replace with an actual screenshot once available -->
+
+---
 
 **Contents**
 
@@ -15,8 +22,7 @@ A multi-agent code review platform. Paste code, upload a file, or link a GitHub 
 - [Environment Variables](#environment-variables)
 - [API Reference](#api-reference)
 - [Project Structure](#project-structure)
-- [Development Notes](#development-notes)
-- [Deployment](#deployment-railway)
+- [Deployment (Railway)](#deployment-railway)
 - [Known Limitations](#known-limitations)
 - [License](#license)
 
@@ -28,7 +34,7 @@ The result is a conflict-first severity-ranked issue list, a downloadable PDF re
 
 ## How It Works
 
-1. **Submit** — paste code, upload a file (up to 100KB), or provide a GitHub URL (single file or best file auto-selected from a repo)
+1. **Submit** — paste code, upload a file (up to 100KB), or provide a GitHub URL (single file, or best file auto-selected from a repo)
 2. **Watch** — five agents run sequentially and stream their verdicts live over WebSocket as each one finishes
 3. **Read** — the Synthesis Agent merges findings, marks issues agreed on by 2+ agents as Critical, and surfaces explicit conflicts
 4. **Export** — download a PDF report or copy a permanent public share link
@@ -128,17 +134,15 @@ The pipeline runs sequentially (not in parallel) to stay within Groq's free-tier
 
 ### Agent Execution Model: Parallel → Sequential
 
-The pipeline was initially designed to run all five agents in parallel — each agent fires simultaneously and the synthesis node waits for all five to complete before running. This is the natural topology for independent reviewers.
+The pipeline was initially designed to run all five agents in parallel. In practice it immediately hit Groq's 12,000 TPM limit — five agents firing simultaneously consumed roughly 4,000–5,000 tokens per second, exhausting the per-minute bucket and causing the 4th and 5th agents to 429 on every run.
 
-In practice it immediately hit Groq's 12,000 TPM limit. Five agents firing at the same time consumed roughly 4,000–5,000 tokens in the same second, exhausting the per-minute bucket instantly and causing the 4th and 5th agents to 429 on every run.
-
-Switching to sequential execution (`pragmatist → paranoid → minimalist → optimizer → mentor → synthesis`) spaces requests across 30–60 seconds, well within the TPM window. There is a side benefit: the frontend renders agent cards one at a time as each agent finishes, which gives the impression of a live debate rather than a simultaneous data dump. If the project moves to a paid Groq tier (or a different provider), reverting to parallel is a single topological change in `pipeline/graph.py`.
+Switching to sequential execution spaces requests across 30–60 seconds, well within the TPM window. There is a side benefit: the frontend renders agent cards one at a time as each agent finishes, giving the impression of a live debate rather than a simultaneous data dump.
 
 ### Rate Limit Resilience: SDK-Level Retry
 
-Even with sequential execution, the Groq free tier (5 RPM / 12,000 TPM) can still be exceeded — particularly by the synthesis node, which receives all five agent results as input and can request up to 4,096 output tokens in a single call.
+Even with sequential execution, the Groq free tier (5 RPM / 12,000 TPM) can still be exceeded — particularly by the synthesis node, which receives all five agent results as input.
 
-Measured token usage for a typical review (verified from Groq console logs):
+Measured token usage for a typical review:
 
 | Call | Input tokens | Output tokens |
 |---|---|---|
@@ -150,54 +154,36 @@ Measured token usage for a typical review (verified from Groq console logs):
 | Synthesis            | ~3,550 | ~1,405 |
 | **Total**            | **~7,737** | **~4,640** |
 
-At ~13,300 tokens per review, a single submission is already above the 12,000 TPM ceiling if all calls fall within the same minute. The Groq Python SDK handles this transparently: on a 429 response it reads the `retry-after` header (typically 1–23 seconds) and re-issues the request automatically, without surfacing an exception to application code. In practice, agents 4 and 5 and synthesis each get one automatic retry per run, adding 5–25 seconds of total latency but completing successfully. The Celery task retry (`max_retries=2`) acts as a final safety net for cases where the SDK exhausts its own retries.
+The Groq Python SDK handles 429s transparently: on a rate-limit response it reads the `retry-after` header and re-issues the request automatically. The Celery task retry (`max_retries=2`) acts as a final safety net.
 
-### LLM Provider: Gemini → Groq (and why)
+### LLM Provider: Gemini → Groq
 
-The pipeline was originally written against the Google Gemini API (`gemini-1.5-flash`). In production, every call returned a `limit: 0` error — the API key did not have access to that model variant. Upgrading to `gemini-2.0-flash` hit a different wall: Google deprecated `2.0-flash` effective June 1 2026, right as the project was being deployed. Both issues are free-tier access restrictions, not model quality problems.
+The pipeline was originally written against the Google Gemini API (`gemini-1.5-flash`). In production, every call returned a `limit: 0` error; upgrading to `gemini-2.0-flash` hit a deprecation wall (June 1 2026). Both are free-tier access restrictions.
 
-Groq was chosen as the replacement for two reasons: its free tier is the most generous available for production use (14,400 RPD, no waitlist), and `llama-3.3-70b-versatile` reliably produces structured JSON outputs, which is the primary requirement for a pipeline where every agent must return a parseable schema. The tradeoff is lower reasoning depth than Gemini 2.5 Pro or GPT-4o — acceptable here because the agent personas constrain output structure tightly via system prompts.
+Groq was chosen as the replacement: its free tier is the most generous available for production use (14,400 RPD, no waitlist), and `llama-3.3-70b-versatile` reliably produces structured JSON, which is the primary requirement for a pipeline where every agent must return a parseable schema.
 
-Switching required replacing `google-genai` with `groq==0.13.1`, rewriting the LLM call in `base.py` and `synthesis.py` to use `client.chat.completions.create`, and renaming `GEMINI_API_KEY`/`GEMINI_MODEL` to `GROQ_API_KEY`/`GROQ_MODEL` in settings.
+### Why Celery, not Django async views?
 
-### Why Celery for async task execution, not Django's async views?
+The pipeline takes 10–30 seconds to complete. Holding an HTTP connection open for this duration is wasteful and hits proxy timeouts. Celery decouples submission (fast 201 response) from execution (background worker), allows retries, and separates the ASGI web process from LLM work. The frontend connects via WebSocket for live updates.
 
-The pipeline takes 10–30 seconds to complete (five sequential Gemini calls per parallel branch, then synthesis). Holding an HTTP connection open for this duration is wasteful and hits proxy timeouts. Celery decouples submission (fast 201 response) from execution (background worker), allows retries, and separates the ASGI web process from CPU/IO-bound LLM work. The frontend connects via WebSocket for live updates, not long-polling.
+### Why Redis as both channel layer and Celery broker?
 
-### Why Redis as both channel layer and Celery broker (not RabbitMQ)?
+Railway provides Redis as a managed plugin. For this workload (task fan-out, no complex routing), Redis is fully sufficient as a Celery broker — eliminating the need for a separate RabbitMQ service and reducing the Railway service count.
 
-Railway — the deployment target — provides Redis as a managed plugin. RabbitMQ is not a built-in Railway plugin and requires a third-party CloudAMQP add-on. For this workload (task fan-out with no complex routing, no dead-letter queues, no priority lanes), Redis is fully sufficient as a Celery broker. Eliminating RabbitMQ reduces the service count from six to five and removes a significant operational dependency.
+### Why per-agent WebSocket broadcasts from within agent nodes?
 
-### Why Django Channels for WebSocket, not a dedicated service?
+Each agent node writes to the channel layer immediately after getting its LLM response. This gives the browser a card to render within 3–5 seconds of pipeline start. If all results were held until synthesis, the user would stare at a loading screen for 15–30 seconds.
 
-Django Channels integrates with the existing Django ORM, authentication, and session stack in the same process. The WebSocket consumers can call `database_sync_to_async`-wrapped ORM queries directly. A separate Node.js or Go WebSocket server would require a cross-service message bus for replaying review history and an independent auth layer. The Redis channel layer already provides the pub/sub backbone that Channels needs.
+### Why anonymous reviews without login?
 
-### Why per-agent WebSocket broadcasts from within the agent nodes?
-
-Each agent node writes to the channel layer immediately after getting its LLM response, before other agents finish. This gives the browser a card to render as soon as any agent completes — typically within 3–5 seconds of pipeline start. If all results were held until synthesis, the user would stare at a loading screen for 15–30 seconds. The tradeoff is that agents now have a side effect (channel layer write) inside what should be pure state transformation nodes. This is accepted: the alternative (polling from synthesis) delays feedback.
-
-### Why WeasyPrint for PDF generation?
-
-WeasyPrint renders HTML/CSS to PDF, which allows the same Django template system used for the web view to produce the PDF. The alternative (ReportLab, fpdf2) requires constructing documents programmatically with a separate layout model — twice the maintenance surface. The tradeoff is that WeasyPrint requires system-level libraries (`libcairo2`, `libpango*`) in the Docker image.
-
-### Why anonymous reviews are allowed without login?
-
-Requiring login before showing any value creates a conversion funnel with a large drop-off. The anonymous flow (5 reviews/day, 200-line limit) lets a user experience the full product immediately. Google OAuth is positioned as an upgrade path: history, higher limits, saved annotations. Rate limiting by IP prevents abuse.
-
-### Why `share_slug` is 8 hex characters instead of a sequential ID?
-
-Sequential IDs expose the total review count and allow enumeration of all reviews. An 8-character hex slug (4 billion combinations) is not guessable by enumeration. UUIDs are long for URLs; 8 characters is a reasonable tradeoff between collision probability and URL aesthetics at expected scale. A `unique=True` constraint plus a retry loop on `IntegrityError` handles the rare collision case.
-
-### Why `event_log` is stored on the `Review` model?
-
-WebSocket clients that connect after the pipeline has already emitted events (page refresh, late load) need to catch up. Storing the event log in the database — rather than relying on Redis pub/sub history, which is ephemeral — means a client that connects five minutes after the review finishes still gets the full playback. The tradeoff is that the log grows per review and must be read in full on reconnect.
+Requiring login before showing any value creates a large drop-off. The anonymous flow (5 reviews/day, 200-line limit) lets a user experience the full product immediately. Google OAuth is positioned as an upgrade: history, higher limits, saved annotations.
 
 ## Tech Stack
 
 | Layer | Technology |
 |---|---|
 | Agent Pipeline | LangGraph 0.2+ (sequential chain) |
-| LLM | Groq — llama-3.3-70b-versatile (`groq` SDK) |
+| LLM | Groq — llama-3.3-70b-versatile |
 | Backend | Django 5.0 + Django REST Framework |
 | WebSockets | Django Channels 4 + Redis channel layer |
 | Task Queue | Celery 5 (Redis broker) |
@@ -208,15 +194,15 @@ WebSocket clients that connect after the pipeline has already emitted events (pa
 | PDF Generation | WeasyPrint |
 | Auth | django-allauth (Google OAuth) + simplejwt |
 | Frontend | Next.js 14, TypeScript, TailwindCSS, shadcn/ui |
-| Containerization | Docker Compose |
 | Deployment | Railway |
 
 ## Features
 
 - **Three input modes** — paste, file upload, GitHub URL
 - **Live streaming** — agent verdicts appear as they complete via WebSocket
-- **Severity ranking** — issues flagged by 2+ agents are marked Critical; agent conflicts are surfaced explicitly
-- **Conflict detection** — where agents disagree is surfaced first; you see both stances and decide
+- **Conflict detection** — where agents disagree is surfaced explicitly; you see both stances
+- **Severity ranking** — issues flagged by 2+ agents are marked Critical
+- **Overall score** — 0–100 weighted severity score from the Synthesis Agent
 - **PDF export** — downloadable report with all findings
 - **Shareable links** — every review gets a permanent public URL (`/r/{slug}`)
 - **Review history** — Google OAuth unlocks a dashboard of past reviews
@@ -234,16 +220,23 @@ WebSocket clients that connect after the pipeline has already emitted events (pa
 ### 1. Clone and configure
 
 ```bash
-git clone https://github.com/yourusername/panel-review.git
+git clone https://github.com/JukaleManmath/panel-review.git
 cd panel-review
-cp .env.example .env
+cp .env .env.local   # or create a fresh .env from the table below
 ```
 
-Edit `.env` and set at minimum:
+Set at minimum:
 
-```bash
+```env
 SECRET_KEY=<generate with: python -c "import secrets; print(secrets.token_urlsafe(50))">
+DATABASE_URL=postgres://postgres:postgres@db:5432/panelreview
+REDIS_URL=redis://redis:6379/0
+REDIS_CELERY_BROKER=redis://redis:6379/1
+REDIS_CELERY_BACKEND=redis://redis:6379/2
+REDIS_CACHE_URL=redis://redis:6379/3
 GROQ_API_KEY=<your-groq-api-key>
+NEXT_PUBLIC_API_URL=http://localhost:8000
+NEXT_PUBLIC_WS_URL=ws://localhost:8000
 ```
 
 ### 2. Start services
@@ -257,7 +250,7 @@ This starts:
 - `db` — PostgreSQL 16 on port 5432
 - `redis` — Redis 7 on port 6379
 - `web` — Django + Daphne (ASGI) on port 8000
-- `worker` — Celery worker (4 concurrent)
+- `worker` — Celery worker
 - `frontend` — Next.js dev server on port 3000
 
 ### 3. Run migrations
@@ -284,17 +277,18 @@ Navigate to [http://localhost:3000](http://localhost:3000).
 | `REDIS_CACHE_URL` | Yes | Redis for Django cache |
 | `GROQ_API_KEY` | Yes | Groq Console key |
 | `GROQ_MODEL` | No | Default: `llama-3.3-70b-versatile` |
-| `GITHUB_TOKEN` | No | Raises GitHub API limit from 60 to 5000 req/hr |
+| `GITHUB_TOKEN` | No | Raises GitHub API rate limit from 60 to 5,000 req/hr |
 | `GOOGLE_CLIENT_ID` | No | Required for Google OAuth login |
 | `GOOGLE_CLIENT_SECRET` | No | Required for Google OAuth login |
+| `ALLOWED_HOSTS` | No | Comma-separated hosts (production); defaults to `.railway.app` |
+| `CORS_ALLOWED_ORIGINS` | No | Comma-separated origins for CORS (production) |
 | `ANONYMOUS_DAILY_LIMIT` | No | Default: 5 reviews/day |
 | `AUTHENTICATED_DAILY_LIMIT` | No | Default: 20 reviews/day |
 | `ANONYMOUS_MAX_LINES` | No | Default: 200 lines |
 | `AUTHENTICATED_MAX_LINES` | No | Default: 500 lines |
 | `NEXT_PUBLIC_API_URL` | Yes | Backend URL for the frontend build |
 | `NEXT_PUBLIC_WS_URL` | Yes | WebSocket URL for the frontend build |
-
-See [`.env.example`](.env.example) for all variables.
+| `NEXT_PUBLIC_REDIRECT_URI` | Yes | Google OAuth callback URL |
 
 ## API Reference
 
@@ -309,7 +303,7 @@ See [`.env.example`](.env.example) for all variables.
 | `POST` | `/api/auth/social/google/` | None | Google OAuth code → JWT exchange |
 | `WS` | `ws://.../ws/reviews/{id}/` | Optional | Live review stream |
 
-### Submit a review (paste)
+### Submit a review
 
 ```bash
 curl -X POST http://localhost:8000/api/reviews/ \
@@ -321,17 +315,6 @@ curl -X POST http://localhost:8000/api/reviews/ \
 # → {"review_id": "550e8400-e29b-41d4-a716-446655440000"}
 ```
 
-### Submit a review (GitHub URL)
-
-```bash
-curl -X POST http://localhost:8000/api/reviews/ \
-  -H "Content-Type: application/json" \
-  -d '{
-    "input_mode": "github",
-    "github_url": "https://github.com/owner/repo/blob/main/app.py"
-  }'
-```
-
 ### WebSocket event stream
 
 ```typescript
@@ -340,11 +323,11 @@ const ws = new WebSocket(`ws://localhost:8000/ws/reviews/${reviewId}/`);
 ws.onmessage = (e) => {
   const event = JSON.parse(e.data);
   switch (event.event) {
-    case 'pipeline_start':   // pipeline dispatched to worker
-    case 'agent_done':       // event.agent, event.result
-    case 'synthesis_done':   // event.verdict (final ranked output)
-    case 'done':             // all complete
-    case 'error':            // event.message
+    case 'pipeline_start':  // pipeline dispatched to worker
+    case 'agent_done':      // event.agent, event.result
+    case 'synthesis_done':  // event.verdict (final ranked output)
+    case 'done':            // all complete
+    case 'error':           // event.message
   }
 };
 ```
@@ -372,7 +355,7 @@ interface SynthesisVerdict {
   warnings:    Array<{ title: string; description: string; agents: string[] }>;
   suggestions: Array<{ title: string; description: string; agents: string[] }>;
   conflicts:   Array<{ topic: string; positions: Record<string, string> }>;
-  overall_score: number;   // 0–100
+  overall_score: number;  // 0–100
   summary: string;
 }
 ```
@@ -400,69 +383,50 @@ panel-review/
 │   │   ├── state.py          # ReviewState TypedDict
 │   │   └── agents/           # pragmatist, paranoid, minimalist, optimizer, mentor, synthesis
 │   ├── ws/                   # Django Channels consumers, routing, JWT middleware
+│   ├── railway.json          # Backend Railway config (healthcheck, builder)
+│   ├── railway.worker.json   # Worker Railway config (Celery start command, no healthcheck)
 │   └── worker/
 │       └── tasks.py          # Celery task: pipeline dispatch + lifecycle management
-└── frontend/
-    └── app/
-        ├── page.tsx           # Input page (3 tabs: paste / file / GitHub URL)
-        ├── review/[id]/       # Live streaming results via WebSocket
-        ├── r/[slug]/          # Public share page (static render)
-        ├── dashboard/         # Auth-gated review history
-        └── components/        # AgentCard, SynthesisPanel, ShareButton, etc.
-```
-
-## Development Notes
-
-### Running just the backend
-
-```bash
-cd backend
-pip install -r requirements.txt
-DJANGO_SETTINGS_MODULE=config.settings.local python manage.py runserver
-```
-
-Requires a running PostgreSQL and Redis instance (or `docker compose up db redis`).
-
-### Running the Celery worker
-
-```bash
-cd backend
-celery -A config.celery worker --loglevel=info --concurrency=4
-```
-
-### Running just the frontend
-
-```bash
-cd frontend
-npm install
-npm run dev
+├── frontend/
+│   └── app/
+│       ├── page.tsx           # Input page (3 tabs: paste / file / GitHub URL)
+│       ├── review/[id]/       # Live streaming results via WebSocket
+│       ├── r/[slug]/          # Public share page (static render)
+│       ├── dashboard/         # Auth-gated review history
+│       └── components/        # AgentCard, SynthesisPanel, ShareButton, etc.
+└── docker-compose.yml         # Local dev: db, redis, web, worker, frontend
 ```
 
 ## Deployment (Railway)
 
+The project runs as three Railway services sharing one repo:
+
+| Service | Config file | Start command |
+|---|---|---|
+| Backend (web) | `backend/railway.json` | Dockerfile CMD — migrate + daphne |
+| Worker | `backend/railway.worker.json` | `celery -A config.celery worker --loglevel=info --concurrency=2` |
+| Frontend | Railway auto-detect (Next.js) | `next start` |
+
+### Steps
+
 1. Push to GitHub
-2. Create a new Railway project and connect the repo
+2. Create a Railway project and connect the repo
 3. Add Railway plugins: **PostgreSQL** and **Redis**
-4. Set all environment variables from `.env.example` in the Railway dashboard
-5. Set `DJANGO_SETTINGS_MODULE=config.settings.production`
-6. Set `NEXT_PUBLIC_API_URL` and `NEXT_PUBLIC_WS_URL` to your Railway domains **before the first build** — Next.js bakes these into the JS bundle at build time
-7. The `Procfile` in `backend/` defines process separation:
-   ```
-   web: daphne config.asgi:application --port $PORT --bind 0.0.0.0
-   worker: celery -A config.celery worker --loglevel=info
-   ```
-8. After first deploy, run migrations:
+4. Create three services pointing at the same repo; set each service's **Railway Config File** to the appropriate `railway.json`
+5. Set all required environment variables (see table above) in each service's Variables tab
+6. Set `NEXT_PUBLIC_API_URL` and `NEXT_PUBLIC_WS_URL` **before the first build** — Next.js bakes these into the bundle at build time
+7. After first deploy, run migrations via Railway's one-off command:
    ```bash
-   railway run python manage.py migrate
+   python manage.py migrate
    ```
 
 ## Known Limitations
 
-- **GitHub API rate limit** — without `GITHUB_TOKEN`, GitHub input is limited to 60 requests/hour across all users. Set a token to raise this to 5000/hr.
-- **Code size** — anonymous users are limited to 200 lines; authenticated users to 500 lines. File uploads are capped at 100KB.
-- **Language support** — all languages supported by pygments are detected, but agent prompts are English-only and perform best on mainstream languages (Python, TypeScript, Go, Java, Rust, C/C++).
-- **Groq rate limits** — the free tier allows 14,400 RPD and 12,000 TPM for `llama-3.3-70b-versatile`. The sequential pipeline and SDK retry logic handle occasional bursts, but very large code files submitted in rapid succession may hit TPM limits briefly. The SDK retries automatically.
-- **PDF emoji rendering** — WeasyPrint does not support color emoji fonts on Linux. The PDF report uses text labels in place of emoji.
+- **GitHub API rate limit** — without `GITHUB_TOKEN`, GitHub input is limited to 60 requests/hour across all users
+- **Code size** — anonymous users are limited to 200 lines; authenticated users to 500 lines; file uploads capped at 100KB
+- **Language support** — all pygments-supported languages are detected, but agent prompts perform best on mainstream languages (Python, TypeScript, Go, Java, Rust, C/C++)
+- **Groq rate limits** — the free tier allows 14,400 RPD and 12,000 TPM. The sequential pipeline and SDK retry logic handle occasional bursts, but very large files in rapid succession may add latency
+- **PDF emoji rendering** — WeasyPrint does not support color emoji fonts on Linux; the PDF report uses text labels in place of emoji
 
 ## License
 
